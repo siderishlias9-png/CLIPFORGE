@@ -60,50 +60,95 @@ def download_youtube(url,dest):
         import yt_dlp
     except ImportError:
         raise RuntimeError("YouTube support is missing. Install the requirements.txt included in this project.")
-    opts={
-        # Prefer the best available video + audio streams, but fall back to a
-        # single combined format when separate streams are unavailable.
-        # This avoids forcing an MP4-only format that some videos do not offer.
-        "format":"bestvideo*+bestaudio/best",
-        "format_sort":["res","ext:mp4:m4a"],
-        "outtmpl":str(dest.with_suffix(".%(ext)s")),
-        "noplaylist":True,
-        "quiet":True,
-        "no_warnings":True,
-        "merge_output_format":"mp4",
-        "max_filesize":1_500_000_000,
-        "retries":3,
-        "fragment_retries":5,
-        "extractor_retries":3,
-        "concurrent_fragment_downloads":4,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info=ydl.extract_info(url,download=True)
-            requested=ydl.prepare_filename(info)
-    except yt_dlp.utils.DownloadError as exc:
-        message=str(exc)
-        if "Requested format is not available" in message:
-            raise RuntimeError(
-                "YouTube did not provide a format compatible with the selected download. "
-                "The app now tries multiple format fallbacks; this video may still be "
-                "restricted or temporarily unsupported by yt-dlp. Try another public video "
-                "or update yt-dlp in requirements.txt and redeploy."
-            ) from exc
-        raise
-    got=Path(requested)
-    if not got.exists():
-        mp4=got.with_suffix(".mp4")
-        if mp4.exists(): got=mp4
-    if not got.exists():
-        matches=list(dest.parent.glob(dest.stem+".*"))
-        matches=[x for x in matches if x.suffix.lower() in (".mp4",".mkv",".webm")]
-        if matches: got=matches[0]
-    if not got.exists():
-        raise RuntimeError("YouTube download did not produce a video file. The video may be unavailable or YouTube may have changed its delivery system.")
-    if got != dest:
-        shutil.move(str(got),str(dest))
-    return dest
+
+    # Try a combined stream first. Some videos do not expose separate
+    # video/audio formats, and some do not expose MP4 at all.
+    format_choices = [
+        "best",
+        "best[protocol^=https]/best",
+        "bestvideo*+bestaudio/best",
+    ]
+    errors = []
+    workdir = dest.parent / (dest.stem + "_yt_download")
+    if workdir.exists():
+        shutil.rmtree(workdir, ignore_errors=True)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    for attempt, fmt in enumerate(format_choices, start=1):
+        attempt_dir = workdir / f"attempt_{attempt}"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        opts = {
+            "format": fmt,
+            "outtmpl": str(attempt_dir / "source.%(ext)s"),
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "merge_output_format": "mp4",
+            "max_filesize": 1_500_000_000,
+            "retries": 3,
+            "fragment_retries": 8,
+            "extractor_retries": 3,
+            "file_access_retries": 3,
+            "skip_unavailable_fragments": True,
+            "concurrent_fragment_downloads": 1,
+            "force_ipv4": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+
+            candidates = []
+            if isinstance(info, dict):
+                if info.get("filepath"):
+                    candidates.append(Path(info["filepath"]))
+                for item in info.get("requested_downloads") or []:
+                    if item.get("filepath"):
+                        candidates.append(Path(item["filepath"]))
+                try:
+                    candidates.append(Path(ydl.prepare_filename(info)))
+                except Exception:
+                    pass
+
+            # Include post-processed extensions and ignore empty placeholders.
+            candidates.extend(attempt_dir.glob("source.*"))
+            candidates.extend(attempt_dir.glob("source*"))
+            seen = set()
+            valid = []
+            for candidate in candidates:
+                try:
+                    candidate = candidate.resolve()
+                    if candidate in seen or not candidate.is_file():
+                        continue
+                    seen.add(candidate)
+                    if candidate.stat().st_size > 1024 and candidate.suffix.lower() in (
+                        ".mp4", ".mkv", ".webm", ".mov", ".m4v"
+                    ):
+                        valid.append(candidate)
+                except OSError:
+                    continue
+
+            if valid:
+                # Prefer the largest completed media file if both the
+                # pre-merge and post-merge files are present.
+                downloaded = max(valid, key=lambda p: p.stat().st_size)
+                if dest.exists():
+                    dest.unlink()
+                shutil.move(str(downloaded), str(dest))
+                if dest.is_file() and dest.stat().st_size > 1024:
+                    shutil.rmtree(workdir, ignore_errors=True)
+                    return dest
+        except Exception as exc:
+            errors.append(f"Attempt {attempt} ({fmt}): {str(exc)[:500]}")
+
+    shutil.rmtree(workdir, ignore_errors=True)
+    detail = " | ".join(errors[-3:])
+    raise RuntimeError(
+        "YouTube did not produce a usable video file (the download was empty or incomplete). "
+        "This can happen when YouTube changes its delivery system, the video is restricted, "
+        "or the hosting server cannot retrieve the media stream. Try another publicly "
+        "available video. If several public videos fail, update yt-dlp and redeploy. "
+        + (f"Details: {detail}" if detail else "")
+    )
 
 def transcribe(path,model_name,language):
     from faster_whisper import WhisperModel

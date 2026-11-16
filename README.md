@@ -27,3 +27,10 @@ Install FFmpeg, then:
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+
+### YouTube download troubleshooting
+The downloader now tries a combined stream first, then additional compatible format
+fallbacks. It checks that the resulting media file exists and is non-empty before
+starting transcription. YouTube may still block or restrict individual videos, and
+free cloud hosting may be unable to retrieve some streams.
