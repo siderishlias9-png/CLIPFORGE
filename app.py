@@ -92,6 +92,11 @@ def download_youtube(url,dest):
             "skip_unavailable_fragments": True,
             "concurrent_fragment_downloads": 1,
             "force_ipv4": True,
+            # YouTube now requires JavaScript challenge solving for some
+            # formats. Deno is installed from the Python requirements and
+            # yt-dlp-ejs is supplied by yt-dlp[default].
+            "js_runtimes": {"deno": {}},
+            "remote_components": ["ejs:github"],
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -145,8 +150,10 @@ def download_youtube(url,dest):
     raise RuntimeError(
         "YouTube did not produce a usable video file (the download was empty or incomplete). "
         "This can happen when YouTube changes its delivery system, the video is restricted, "
-        "or the hosting server cannot retrieve the media stream. Try another publicly "
-        "available video. If several public videos fail, update yt-dlp and redeploy. "
+        "or the hosting server cannot retrieve the media stream. This build also enables "
+        "yt-dlp's JavaScript challenge solver (Deno + EJS), which is required for many "
+        "current YouTube formats. If this still fails after a full redeploy, the video may "
+        "need a YouTube PO Token provider or may not be downloadable from the cloud host. "
         + (f"Details: {detail}" if detail else "")
     )
 
@@ -315,32 +322,37 @@ def render_clip(src,a,b,out,ratio,segments,subtitles,whoosh,words_per_line,font_
     finally:
         if assfile and os.path.exists(assfile): os.remove(assfile)
 
-# Presets expose sensible defaults immediately; Custom reveals all individual controls.
-PRESETS={
- "Quick test — 3 clips × 30 sec":(3,30,"tiny"),
- "Balanced — 5 clips × 45 sec":(5,45,"base"),
- "More clips — 10 clips × 30 sec":(10,30,"tiny"),
- "Long highlights — 5 clips × 60 sec":(5,60,"base"),
- "Higher transcription accuracy — 5 clips × 45 sec":(5,45,"small"),
- "Custom settings":(5,45,"base")
-}
+# All core clip controls are always visible, so users do not need to
+# switch to a hidden Custom mode to change individual settings.
 with st.sidebar:
     st.header("⚙️ Clip settings")
-    preset=st.selectbox("Choose a preset",list(PRESETS.keys()),index=1)
-    default_count,default_len,default_model=PRESETS[preset]
-    if preset=="Custom settings":
-        wanted=st.slider("Number of clips",1,10,5)
-        clip_len=st.slider("Clip length (seconds)",15,120,45,5)
-        model=st.selectbox("Transcription model",["tiny","base","small"],index=1)
-    else:
-        wanted,clip_len,model=default_count,default_len,default_model
-        st.caption(f"Selected: {wanted} clips · up to {clip_len}s each · {model} model")
-    language=st.selectbox("Spoken language",["Auto detect","English","Greek","Spanish","French","German","Italian","Portuguese","Japanese"])
-    ratio=st.selectbox("Video format",["9:16 vertical","1:1 square","16:9 landscape"],index=0)
-    subtitles=st.checkbox("Word-synced animated subtitles",True)
-    words_per_line=st.slider("Words shown at once",2,7,4)
-    font_size=st.slider("Subtitle size",42,84,66,2)
-    whoosh=st.checkbox("Add subtle generated whoosh",False)
+
+    st.subheader("Clip generation")
+    wanted = st.slider("Number of clips", min_value=1, max_value=10, value=5, step=1)
+    clip_len = st.slider("Clip length (seconds)", min_value=15, max_value=120, value=45, step=5)
+    model = st.selectbox(
+        "Transcription model",
+        ["tiny", "base", "small"],
+        index=1,
+        help="Tiny is fastest, base is balanced, and small can be more accurate but uses more time and memory."
+    )
+
+    st.subheader("Video format")
+    ratio = st.selectbox(
+        "Aspect ratio",
+        ["9:16 vertical", "1:1 square", "16:9 landscape"],
+        index=0
+    )
+
+    st.subheader("Subtitles and effects")
+    language = st.selectbox(
+        "Spoken language",
+        ["Auto detect", "English", "Greek", "Spanish", "French", "German", "Italian", "Portuguese", "Japanese"]
+    )
+    subtitles = st.checkbox("Word-synced animated subtitles", True)
+    words_per_line = st.slider("Words shown at once", 2, 7, 4)
+    font_size = st.slider("Subtitle size", 42, 84, 66, 2)
+    whoosh = st.checkbox("Add subtle generated whoosh", False)
     st.caption("Smooth visual/audio fades are enabled automatically.")
 
 st.subheader("1 · Add your video")

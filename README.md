@@ -34,3 +34,20 @@ The downloader now tries a combined stream first, then additional compatible for
 fallbacks. It checks that the resulting media file exists and is non-empty before
 starting transcription. YouTube may still block or restrict individual videos, and
 free cloud hosting may be unable to retrieve some streams.
+
+
+### YouTube extractor compatibility update
+This version installs the yt-dlp pre-release channel, the `yt-dlp[default]`
+JavaScript challenge solver scripts, and Deno. The downloader explicitly enables
+Deno and allows yt-dlp to retrieve its EJS challenge scripts from GitHub.
+This addresses missing-format failures caused by YouTube's JavaScript challenges.
+It does not bypass sign-in, age, privacy, DRM, or other access restrictions.
+Some videos may still require a PO Token provider or may be unavailable from
+Streamlit Community Cloud.
+
+
+### Clip settings
+The sidebar always shows the individual controls: clip count (1–10), clip duration
+(15–120 seconds), transcription model (tiny/base/small), aspect ratio
+(9:16, 1:1, 16:9), spoken language, subtitle settings, and optional whoosh effect.
+You do not need to select a separate Custom preset to access these options.
