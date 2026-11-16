@@ -148,6 +148,31 @@ def build_windows(segments, duration, clip_seconds, count):
         chosen = [(1, 0, min(duration, clip_seconds), "")]
     return sorted(chosen, key=lambda x: x[1])
 
+def generate_title(transcript_text):
+    """Create a short, readable title from the strongest spoken line in a clip."""
+    text = re.sub(r"\s+", " ", (transcript_text or "")).strip()
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", text)
+    if not text:
+        return "The Moment You Need to See"
+
+    # Prefer the first complete sentence, but fall back to the full excerpt.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    candidate = max(sentences[:2], key=lambda s: len(re.findall(r"\w+", s)), default=text)
+    words = re.findall(r"[A-Za-z0-9’'-]+", candidate)
+    if len(words) > 11:
+        candidate = " ".join(words[:10]).rstrip(" ,;:-") + "…"
+    elif not candidate:
+        candidate = " ".join(words[:10])
+
+    candidate = candidate.strip(" .!?")
+    if len(candidate) < 8:
+        candidate = text
+        words = re.findall(r"[A-Za-z0-9’'-]+", candidate)
+        candidate = " ".join(words[:10]).rstrip(" ,;:-")
+    # Keep natural phrasing while making it look like a video title.
+    return candidate[:76].strip().capitalize()
+
+
 def srt_time(seconds):
     ms = int(max(0, seconds) * 1000)
     h, rem = divmod(ms, 3600000)
@@ -205,7 +230,7 @@ with right:
     captions = st.selectbox("Captions", ["Burn captions", "No captions"])
 
 st.markdown("")
-st.markdown("<div class='panel'><b>How it works</b><br><span class='smallmuted'>ClipForge transcribes the video locally, scores promising moments from the transcript, selects non-overlapping sections, then renders MP4 clips with FFmpeg. The highlight score is a heuristic, not a guaranteed viral score.</span></div>", unsafe_allow_html=True)
+st.markdown("<div class='panel'><b>How it works</b><br><span class='smallmuted'>ClipForge transcribes the video locally, scores promising moments from the transcript, selects non-overlapping sections, then renders MP4 clips with FFmpeg and suggests a short title from each clip's transcript. You can edit each title before downloading. The highlight score is a heuristic, not a guaranteed viral score.</span></div>", unsafe_allow_html=True)
 
 if not ffmpeg_path() or not shutil.which("ffprobe"):
     st.error("FFmpeg/FFprobe is missing. Install the system package from packages.txt and redeploy.")
@@ -243,9 +268,10 @@ if st.button("✂️  Generate my clips", type="primary", use_container_width=Tr
                 out = output_dir / f"clipforge_clip_{i:02}.mp4"
                 st.write(f"Rendering clip {i}/{len(windows)}…")
                 make_clip(source, out, start, end, ratio, captions, transcript, workdir)
-                rendered.append((out, start, end, score, hook))
+                title = generate_title(hook)
+                rendered.append((out, start, end, score, hook, title))
             status.update(label="Your clips are ready!", state="complete", expanded=False)
-        st.session_state["clipforge_results"] = [(str(p), a, b, sc, hook) for p,a,b,sc,hook in rendered]
+        st.session_state["clipforge_results"] = [(str(p), a, b, sc, hook, title) for p,a,b,sc,hook,title in rendered]
         st.session_state["clipforge_dir"] = str(workdir)
     except Exception as e:
         st.error(f"Couldn't finish processing: {e}")
@@ -256,13 +282,15 @@ if st.session_state.get("clipforge_results"):
     st.markdown("## ③ Your clips")
     results = st.session_state["clipforge_results"]
     cols = st.columns(2)
-    for i, (path, start, end, score, hook) in enumerate(results):
+    for i, (path, start, end, score, hook, generated_title) in enumerate(results):
         p = Path(path)
         with cols[i % 2]:
             st.markdown(f"<div class='clipcard'><b>Clip {i+1}</b><br><span class='smallmuted'>{start:.1f}s – {end:.1f}s · {end-start:.0f}s</span></div>", unsafe_allow_html=True)
+            title = st.text_input("Suggested video title", value=generated_title, key=f"title_{i}")
             if p.exists():
                 st.video(str(p))
-                st.download_button("⬇️ Download MP4", data=p.read_bytes(), file_name=p.name,
+                slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower()[:55] or f"clipforge-clip-{i+1}"
+                st.download_button("⬇️ Download MP4", data=p.read_bytes(), file_name=f"{slug}.mp4",
                                    mime="video/mp4", key=f"download_{i}", use_container_width=True)
     st.success("Download the clips you want. You can then upload them to your social platforms.")
 st.markdown("---")
