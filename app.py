@@ -1,297 +1,243 @@
-import os
-import re
-import json
-import math
-import tempfile
-import subprocess
-import shutil
+
+import os, re, subprocess, tempfile
 from pathlib import Path
 from urllib.parse import urlparse
-
-import streamlit as st
 import requests
+import streamlit as st
 
-st.set_page_config(page_title="ClipForge AI", page_icon="✂️", layout="wide")
-
-# ---------- Theme ----------
+st.set_page_config(page_title="ClipForge AI", page_icon="🎬", layout="wide")
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-.stApp { background: radial-gradient(circle at 12% 0%, #20234b 0, #101321 34%, #0b0d16 75%); color: #f5f6ff; }
-.block-container { max-width: 1120px; padding-top: 2.2rem; }
-.hero { padding: 26px 28px; border: 1px solid #34395e; border-radius: 22px;
-background: linear-gradient(120deg, rgba(94,76,220,.25), rgba(27,169,178,.10));
-box-shadow: 0 18px 55px rgba(0,0,0,.22); }
-.eyebrow { color:#a9a5ff; font-size:12px; font-weight:800; letter-spacing:2px; text-transform:uppercase; }
-.hero h1 { font-size: clamp(34px, 5vw, 54px); margin:8px 0 4px; line-height:1.05; }
-.hero p { color:#b9bfd6; font-size:16px; margin:8px 0 0; }
-.pill { display:inline-block; padding:6px 10px; border-radius:30px; border:1px solid #41476d; color:#c9caff; font-size:12px; margin-right:6px; }
-.panel { background:rgba(23,27,45,.86); border:1px solid #303653; padding:18px; border-radius:18px; }
-.smallmuted { color:#9ba4c1; font-size:13px; }
-.clipcard { border:1px solid #343b5c; background:#171b2d; border-radius:16px; padding:16px; margin:12px 0; }
-div[data-testid="stButton"] button { border-radius:12px; font-weight:700; min-height:44px; }
+.stApp{background:radial-gradient(circle at 10% 0%,#202c4b,#101522 42%,#0b0e16)}
+.block-container{max-width:1150px;padding-top:2rem}
+.hero{padding:25px 28px;border:1px solid #34415f;border-radius:20px;background:linear-gradient(120deg,#26375c,#151c2d);margin-bottom:20px}
+.hero h1{font-size:2.35rem;margin:0;letter-spacing:-.04em}
+.hero p{color:#c4cde0;margin:8px 0 0}
+div[data-testid="stMetric"]{background:#ffffff0a;padding:14px;border:1px solid #303b52;border-radius:14px}
+.stButton>button{border-radius:12px;font-weight:700;min-height:2.8rem}
 </style>
+<div class="hero"><h1>🎬 ClipForge <span style="color:#91adff">AI</span></h1>
+<p>Automatic highlights, animated subtitles, smooth fades, sound accents and ready-to-share MP4 clips.</p></div>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div class="hero">
-  <div class="eyebrow">CREATOR TOOLKIT · LOCAL AI</div>
-  <h1>ClipForge <span style="color:#9b91ff">AI</span></h1>
-  <p>Turn a long video into short, captioned clips — without Vizard or a paid API key.</p>
-  <div style="margin-top:16px">
-    <span class="pill">✦ Open-source engine</span><span class="pill">9:16 ready</span><span class="pill">No API key</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+def cmd(args, timeout=900):
+    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    if p.returncode:
+        raise RuntimeError((p.stderr or p.stdout)[-2800:])
+    return p.stdout.strip()
 
-# ---------- Utilities ----------
-def ffmpeg_path():
-    return shutil.which("ffmpeg")
+def duration_of(path):
+    return float(cmd(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(path)]))
 
-def run_cmd(args):
-    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if p.returncode != 0:
-        raise RuntimeError((p.stderr or p.stdout)[-2500:])
-    return p
+def has_audio(path):
+    s = cmd(["ffprobe","-v","error","-select_streams","a:0","-show_entries","stream=codec_type","-of","csv=p=0",str(path)])
+    return bool(s.strip())
 
-def safe_filename(name):
-    name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
-    return name[:80] or "video"
+def download_video(url, dest):
+    u=urlparse(url)
+    if u.scheme not in ("http","https") or not u.netloc:
+        raise ValueError("Enter a valid public http(s) video-file URL.")
+    with requests.get(url,stream=True,timeout=(15,90),headers={"User-Agent":"ClipForge/1.0"}) as r:
+        r.raise_for_status()
+        if "text/html" in r.headers.get("content-type","").lower():
+            raise ValueError("This is a webpage, not a direct video file. Use a direct MP4/MOV/WebM link or upload a video.")
+        total=0
+        with open(dest,"wb") as f:
+            for chunk in r.iter_content(1024*1024):
+                if chunk:
+                    total+=len(chunk)
+                    if total>1_500_000_000: raise ValueError("Video exceeds the 1.5 GB limit.")
+                    f.write(chunk)
 
-def fetch_direct_video(url, dest):
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError("Enter a valid http(s) video-file URL.")
-    # Only fetch direct media files; do not scrape platform pages or bypass access controls.
-    r = requests.get(url.strip(), stream=True, timeout=(15, 60), headers={"User-Agent": "ClipForgeAI/1.0"})
-    r.raise_for_status()
-    ctype = r.headers.get("content-type", "").lower()
-    if not (ctype.startswith("video/") or parsed.path.lower().endswith((".mp4", ".mov", ".mkv", ".webm", ".m4v"))):
-        raise ValueError("That link does not look like a direct video file. Upload the video instead.")
-    total = 0
-    with open(dest, "wb") as f:
-        for chunk in r.iter_content(1024 * 1024):
-            if chunk:
-                total += len(chunk)
-                if total > 2_000_000_000:
-                    raise ValueError("The video is larger than the 2 GB import limit.")
-                f.write(chunk)
-    if total == 0:
-        raise ValueError("The video file was empty.")
-
-def get_duration(path):
-    out = run_cmd(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                   "-of", "default=noprint_wrappers=1:nokey=1", str(path)]).stdout.strip()
-    return float(out)
-
-def transcribe(path, model_size="tiny"):
+def transcribe(path, model_name, lang):
     from faster_whisper import WhisperModel
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(str(path), vad_filter=True, word_timestamps=False)
-    return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()} for s in segments if s.text.strip()]
+    model=WhisperModel(model_name,device="cpu",compute_type="int8")
+    opts={"vad_filter":True}
+    if lang!="Auto detect": opts["language"]=lang
+    segs,info=model.transcribe(str(path),**opts)
+    rows=[]
+    for s in segs:
+        t=(s.text or "").strip()
+        if t: rows.append({"start":float(s.start),"end":float(s.end),"text":t})
+    return rows,getattr(info,"language",None)
 
-def rank_segments(segments):
-    # Lightweight transcript-based highlight ranking; not a claim of perfect virality prediction.
-    hooks = ["you won't believe", "the truth", "secret", "mistake", "never", "best", "worst",
-             "why", "how", "insane", "crazy", "important", "actually", "finally", "imagine",
-             "the problem", "here's", "listen", "wait", "number one"]
-    scored = []
-    for i, seg in enumerate(segments):
-        text = seg["text"].lower()
-        words = re.findall(r"\b[\w']+\b", text)
-        if not words:
-            continue
-        score = min(len(words), 28) * 0.7
-        score += sum(2.2 for h in hooks if h in text)
-        score += 1.5 if "?" in seg["text"] else 0
-        score += 1.0 if "!" in seg["text"] else 0
-        score += 1.2 if any(w.isupper() and len(w) > 2 for w in seg["text"].split()) else 0
-        # Slight preference for complete, conversational sections.
-        score += min(2.0, max(0, seg["end"] - seg["start"]) * 0.35)
-        scored.append((score, i))
-    return scored
+def score(text):
+    t=text.lower()
+    hooks=("but","because","secret","never","always","why","how","actually","insane","mistake","problem","best","worst","imagine","important","crazy","truth","wait","look")
+    return min(len(t)/100,1.5)+sum(.42 for w in hooks if re.search(r"\b"+w+r"\b",t)) + min(text.count("!")*.12,.5)+min(text.count("?")*.1,.4)
 
-def build_windows(segments, duration, clip_seconds, count):
-    ranked = rank_segments(segments)
-    candidates = []
-    for score, idx in ranked:
-        s = segments[idx]
-        center = (s["start"] + s["end"]) / 2
-        start = max(0, center - clip_seconds * 0.42)
-        end = min(duration, start + clip_seconds)
-        start = max(0, end - clip_seconds)
-        if end - start < min(8, clip_seconds * .55):
-            continue
-        # Expand around neighboring transcript content to preserve context.
-        for prev in reversed(segments[:idx]):
-            if start - prev["end"] <= 2.5 and start - prev["start"] < clip_seconds * .55:
-                start = max(0, prev["start"] - .2)
-            else:
-                break
-        for nxt in segments[idx+1:]:
-            if nxt["start"] - end <= 2.5 and nxt["end"] - start <= clip_seconds * 1.25:
-                end = min(duration, nxt["end"] + .2)
-            else:
-                break
-        if end - start > clip_seconds * 1.35:
-            end = start + clip_seconds * 1.35
-        candidates.append((score, start, end, s["text"]))
+def choose_windows(segs,total,wanted,clip_len):
+    length=min(float(clip_len),total)
+    if total<=length: return [(0.0,total)]
+    candidates=[]
+    for s in segs:
+        center=(s["start"]+s["end"])/2
+        start=max(0.0,min(total-length,center-length/2))
+        text=" ".join(x["text"] for x in segs if x["start"]<start+length and x["end"]>start)
+        candidates.append((score(text),start,start+length))
     candidates.sort(reverse=True)
-    chosen = []
-    for score, start, end, text in candidates:
-        if all(end <= a or start >= b for _, a, b, _ in chosen):
-            chosen.append((score, start, end, text))
-        if len(chosen) >= count:
-            break
-    if not chosen:
-        chosen = [(1, 0, min(duration, clip_seconds), "")]
-    return sorted(chosen, key=lambda x: x[1])
+    chosen=[]
+    min_gap=max(2.0,length*.4)
+    for sc,a,b in candidates:
+        if all(abs(a-x[0])>=min_gap for x in chosen):
+            chosen.append((a,b,sc))
+        if len(chosen)>=wanted: break
+    # Fill remaining slots evenly. Overlap is allowed if the source is too short
+    # to provide the requested number of distinct moments.
+    missing=wanted-len(chosen)
+    for i in range(missing):
+        # Always fill the requested count; when the source is short, windows
+        # may overlap rather than silently returning fewer clips.
+        pos=(i+1)/(missing+1)*(total-length)
+        chosen.append((pos,pos+length,0))
+    chosen.sort(key=lambda x:x[0])
+    return [(a,b) for a,b,_ in chosen[:wanted]]
 
-def generate_title(transcript_text):
-    """Create a short, readable title from the strongest spoken line in a clip."""
-    text = re.sub(r"\s+", " ", (transcript_text or "")).strip()
-    text = re.sub(r"^[\W_]+|[\W_]+$", "", text)
-    if not text:
-        return "The Moment You Need to See"
+def ass_time(seconds):
+    centis=int(max(0.0,seconds)*100)
+    hours,rem=divmod(centis,360000)
+    minutes,rem=divmod(rem,6000)
+    secs,cs=divmod(rem,100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
 
-    # Prefer the first complete sentence, but fall back to the full excerpt.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    candidate = max(sentences[:2], key=lambda s: len(re.findall(r"\w+", s)), default=text)
-    words = re.findall(r"[A-Za-z0-9’'-]+", candidate)
-    if len(words) > 11:
-        candidate = " ".join(words[:10]).rstrip(" ,;:-") + "…"
-    elif not candidate:
-        candidate = " ".join(words[:10])
+def ass_escape(text):
+    return text.replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n"," ")
 
-    candidate = candidate.strip(" .!?")
-    if len(candidate) < 8:
-        candidate = text
-        words = re.findall(r"[A-Za-z0-9’'-]+", candidate)
-        candidate = " ".join(words[:10]).rstrip(" ,;:-")
-    # Keep natural phrasing while making it look like a video title.
-    return candidate[:76].strip().capitalize()
+def write_ass(segs,clip_start,clip_end,path,width,height):
+    out=[
+      "[Script Info]","ScriptType: v4.00+",
+      f"PlayResX: {width}",f"PlayResY: {height}","WrapStyle: 2","ScaledBorderAndShadow: yes","",
+      "[V4+ Styles]",
+      "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+      "Style: Pop,Arial,64,&H00FFFFFF,&H0000FFFF,&H00101010,&H90000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,250,1","",
+      "[Events]","Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+    ]
+    for s in segs:
+        a=max(clip_start,s["start"]); b=min(clip_end,s["end"])
+        if b<=a: continue
+        txt=ass_escape(s["text"])
+        if len(txt)>48:
+            words=txt.split()
+            mid=max(1,len(words)//2)
+            txt=" ".join(words[:mid])+"\\N"+" ".join(words[mid:])
+        txt="{\\fad(100,120)\\fscx92\\fscy92\\t(0,160,\\fscx100\\fscy100)}"+txt
+        out.append(f"Dialogue: 0,{ass_time(a-clip_start)},{ass_time(b-clip_start)},Pop,,0,0,0,,{txt}")
+    Path(path).write_text("\n".join(out),encoding="utf-8")
 
+def safe_name(s):
+    s=re.sub(r"[^A-Za-z0-9 _-]","",s).strip().replace(" ","_")
+    return (s[:60] or "highlight")
 
-def srt_time(seconds):
-    ms = int(max(0, seconds) * 1000)
-    h, rem = divmod(ms, 3600000)
-    m, rem = divmod(rem, 60000)
-    s, ms = divmod(rem, 1000)
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+def title_for(segs,a,b,n):
+    text=" ".join(s["text"] for s in segs if s["start"]<b and s["end"]>a)
+    words=re.findall(r"[A-Za-z0-9']+",text)
+    if not words: return f"Highlight {n}"
+    title=" ".join(words[:8]).strip()
+    if len(title)<12: title=text[:55].strip(" .!?")
+    return title[:64].capitalize()
 
-def write_srt(segments, start, end, out):
-    rows = []
-    n = 1
-    for seg in segments:
-        a, b = max(start, seg["start"]), min(end, seg["end"])
-        if b <= a:
-            continue
-        rows.extend([str(n), f"{srt_time(a-start)} --> {srt_time(b-start)}", seg["text"], ""])
-        n += 1
-    Path(out).write_text("\n".join(rows), encoding="utf-8")
-
-def make_clip(source, out, start, end, ratio, caption_mode, segments, tempdir):
-    dur = max(.5, end-start)
-    args = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-i", str(source), "-t", f"{dur:.3f}"]
-    filters = []
-    if ratio == "9:16":
-        filters.append("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920")
-    elif ratio == "1:1":
-        filters.append("scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080")
-    elif ratio == "4:5":
-        filters.append("scale=1080:1350:force_original_aspect_ratio=increase,crop=1080:1350")
+def render_clip(src,a,b,out,ratio,segs,subtitles,whoosh):
+    length=max(.2,b-a)
+    if ratio=="9:16":
+        vf="scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"; w,h=1080,1920
+    elif ratio=="1:1":
+        vf="scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"; w,h=1080,1080
     else:
-        filters.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2")
-    if caption_mode == "Burn captions":
-        srt = Path(tempdir) / (Path(out).stem + ".srt")
-        write_srt(segments, start, end, srt)
-        # Escape path for ffmpeg subtitles filter.
-        srt_path = str(srt).replace("\\", "/").replace(":", r"\:")
-        filters.append(f"subtitles='{srt_path}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=90'")
-    args += ["-vf", ",".join(filters), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)]
-    run_cmd(args)
-
-# ---------- Interface ----------
-left, right = st.columns([1.25, .75], gap="large")
-with left:
-    st.markdown("### ① Add your video")
-    upload = st.file_uploader("Upload a video file", type=["mp4", "mov", "mkv", "webm", "m4v"])
-    st.markdown("<div class='smallmuted'>Or use a direct, publicly accessible video-file URL (MP4/MOV/WebM). Platform watch-page links are not downloaded.</div>", unsafe_allow_html=True)
-    url = st.text_input("Direct video URL", placeholder="https://example.com/video.mp4")
-with right:
-    st.markdown("### ② Clip settings")
-    clip_len = st.select_slider("Target clip length", options=[15, 20, 30, 45, 60, 90], value=30, format_func=lambda x: f"{x} sec")
-    clip_count = st.slider("Number of clips", 1, 10, 5)
-    ratio = st.selectbox("Video format", ["9:16", "1:1", "4:5", "16:9"], index=0)
-    model = st.selectbox("Transcription model", ["tiny", "base", "small"], index=0,
-                         help="Tiny is fastest and uses the least memory. Models download automatically on first run.")
-    captions = st.selectbox("Captions", ["Burn captions", "No captions"])
-
-st.markdown("")
-st.markdown("<div class='panel'><b>How it works</b><br><span class='smallmuted'>ClipForge transcribes the video locally, scores promising moments from the transcript, selects non-overlapping sections, then renders MP4 clips with FFmpeg and suggests a short title from each clip's transcript. You can edit each title before downloading. The highlight score is a heuristic, not a guaranteed viral score.</span></div>", unsafe_allow_html=True)
-
-if not ffmpeg_path() or not shutil.which("ffprobe"):
-    st.error("FFmpeg/FFprobe is missing. Install the system package from packages.txt and redeploy.")
-    st.stop()
-
-if st.button("✂️  Generate my clips", type="primary", use_container_width=True):
-    if not upload and not url.strip():
-        st.warning("Upload a video or paste a direct video-file URL first.")
-        st.stop()
-    workdir = Path(tempfile.mkdtemp(prefix="clipforge_"))
-    source = workdir / "source_video"
+        vf="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"; w,h=1920,1080
+    vf+=f",fps=30,fade=t=in:st=0:d=0.25,fade=t=out:st={max(0,length-.3):.3f}:d=0.3"
+    assfile=None
+    if subtitles:
+        fd,assfile=tempfile.mkstemp(suffix=".ass"); os.close(fd)
+        write_ass(segs,a,b,assfile,w,h)
+        ap=assfile.replace("\\","/").replace(":","\\:")
+        vf+=f",ass='{ap}'"
     try:
-        with st.status("Preparing your video…", expanded=True) as status:
-            if upload:
-                ext = Path(upload.name).suffix or ".mp4"
-                source = source.with_suffix(ext)
-                source.write_bytes(upload.getbuffer())
-                st.write(f"Loaded **{upload.name}**")
+        if has_audio(src):
+            af=f"afade=t=in:st=0:d=0.2,afade=t=out:st={max(0,length-.3):.3f}:d=0.3"
+            if whoosh:
+                # Generated low-level noise sweep; no third-party/copyrighted audio.
+                fc=f"[0:v]{vf}[v];[0:a]{af}[a];anoisesrc=color=white:duration={length}:sample_rate=44100:amplitude=0.012,lowpass=f=1600,afade=t=in:st=0:d=0.03,afade=t=out:st={max(0,length-.4):.3f}:d=0.4[fx];[a][fx]amix=inputs=2:duration=first:weights='1 0.25'[ao]"
+                args=["ffmpeg","-y","-ss",str(a),"-i",str(src),"-filter_complex",fc,"-map","[v]","-map","[ao]","-t",str(length),"-c:v","libx264","-preset","veryfast","-crf","23","-c:a","aac","-b:a","160k","-movflags","+faststart",str(out)]
             else:
-                st.write("Fetching the direct video file…")
-                fetch_direct_video(url, source.with_suffix(".mp4"))
-                source = source.with_suffix(".mp4")
-            duration = get_duration(source)
-            st.write(f"Video duration: **{duration/60:.1f} minutes**")
-            st.write("Transcribing speech with the open-source Whisper model…")
-            transcript = transcribe(source, model)
-            if not transcript:
-                raise RuntimeError("No speech was detected. Try another video or use a clearer audio track.")
-            st.write(f"Transcribed **{len(transcript)} speech segments**")
-            windows = build_windows(transcript, duration, clip_len, clip_count)
-            output_dir = workdir / "clips"
-            output_dir.mkdir()
-            rendered = []
-            for i, (score, start, end, hook) in enumerate(windows, 1):
-                out = output_dir / f"clipforge_clip_{i:02}.mp4"
-                st.write(f"Rendering clip {i}/{len(windows)}…")
-                make_clip(source, out, start, end, ratio, captions, transcript, workdir)
-                title = generate_title(hook)
-                rendered.append((out, start, end, score, hook, title))
-            status.update(label="Your clips are ready!", state="complete", expanded=False)
-        st.session_state["clipforge_results"] = [(str(p), a, b, sc, hook, title) for p,a,b,sc,hook,title in rendered]
-        st.session_state["clipforge_dir"] = str(workdir)
-    except Exception as e:
-        st.error(f"Couldn't finish processing: {e}")
-        st.caption("If this is a deployment memory or FFmpeg error, try a shorter video and the Tiny model.")
-        shutil.rmtree(workdir, ignore_errors=True)
+                args=["ffmpeg","-y","-ss",str(a),"-i",str(src),"-vf",vf,"-af",af,"-t",str(length),"-c:v","libx264","-preset","veryfast","-crf","23","-c:a","aac","-b:a","160k","-movflags","+faststart",str(out)]
+        else:
+            args=["ffmpeg","-y","-ss",str(a),"-i",str(src),"-vf",vf,"-t",str(length),"-an","-c:v","libx264","-preset","veryfast","-crf","23","-movflags","+faststart",str(out)]
+        cmd(args)
+    finally:
+        if assfile and os.path.exists(assfile): os.remove(assfile)
 
-if st.session_state.get("clipforge_results"):
-    st.markdown("## ③ Your clips")
-    results = st.session_state["clipforge_results"]
-    cols = st.columns(2)
-    for i, (path, start, end, score, hook, generated_title) in enumerate(results):
-        p = Path(path)
-        with cols[i % 2]:
-            st.markdown(f"<div class='clipcard'><b>Clip {i+1}</b><br><span class='smallmuted'>{start:.1f}s – {end:.1f}s · {end-start:.0f}s</span></div>", unsafe_allow_html=True)
-            title = st.text_input("Suggested video title", value=generated_title, key=f"title_{i}")
-            if p.exists():
-                st.video(str(p))
-                slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower()[:55] or f"clipforge-clip-{i+1}"
-                st.download_button("⬇️ Download MP4", data=p.read_bytes(), file_name=f"{slug}.mp4",
-                                   mime="video/mp4", key=f"download_{i}", use_container_width=True)
-    st.success("Download the clips you want. You can then upload them to your social platforms.")
-st.markdown("---")
-st.markdown("<div class='smallmuted'>ClipForge Free · No Vizard account, Vizard API key, or paid clipping API required. Video processing happens on the server running this app. Only process videos you have permission to use. Platform links that require login, subscriptions, or access circumvention are not supported.</div>", unsafe_allow_html=True)
+with st.sidebar:
+    st.header("⚙️ Clip settings")
+    wanted=st.slider("Number of clips",1,10,5)
+    clip_len=st.slider("Target clip length",15,90,35,5)
+    ratio=st.selectbox("Aspect ratio",["9:16","1:1","16:9"])
+    model=st.selectbox("Whisper model",["tiny","base","small"],help="Tiny is fastest on free hosting.")
+    lang=st.selectbox("Spoken language",["Auto detect","English","Greek","Spanish","French","German","Italian","Portuguese","Japanese"])
+    subtitles=st.checkbox("Animated subtitles",True)
+    whoosh=st.checkbox("Add subtle generated whoosh sound",False)
+    st.caption("Smooth visual/audio fades are enabled automatically.")
+
+st.subheader("1 · Add your video")
+source=st.radio("Video source",["Upload video","Direct video-file URL"],horizontal=True)
+upload=None; url=""
+if source=="Upload video":
+    upload=st.file_uploader("Choose MP4, MOV, MKV or WebM",type=["mp4","mov","mkv","webm"])
+else:
+    url=st.text_input("Public direct video URL",placeholder="https://example.com/video.mp4")
+    st.caption("Direct file URLs only. YouTube/Twitch watch pages and login-protected links are not supported.")
+st.subheader("2 · Create your clips")
+if st.button("✨ Generate clips",type="primary",use_container_width=True):
+    if not upload and not url:
+        st.error("Upload a video or enter a direct video-file URL.")
+        st.stop()
+    work=Path(tempfile.mkdtemp(prefix="clipforge_"))
+    try:
+        src=work/"input_video"
+        with st.status("Working on your video…",expanded=True) as status:
+            if upload:
+                src=work/Path(upload.name).name
+                src.write_bytes(upload.getvalue())
+            else:
+                st.write("Downloading public video file…")
+                download_video(url,src)
+            dur=duration_of(src)
+            if dur<2: raise ValueError("Video is too short or could not be read.")
+            st.write(f"Transcribing speech with Whisper ({model})…")
+            segs,detected=transcribe(src,model,lang)
+            st.write("Selecting highlight moments…")
+            windows=choose_windows(segs,dur,wanted,clip_len)
+            if not windows: raise RuntimeError("Could not select clip segments.")
+            outdir=work/"clips"; outdir.mkdir()
+            done=[]
+            bar=st.progress(0)
+            for i,(a,b) in enumerate(windows,1):
+                title=title_for(segs,a,b,i)
+                out=outdir/f"{i:02d}_{safe_name(title)}.mp4"
+                st.write(f"Rendering clip {i} of {len(windows)}…")
+                render_clip(src,a,b,out,ratio,segs,subtitles,whoosh)
+                done.append((title,out,a,b))
+                bar.progress(i/len(windows))
+            status.update(label="Clips created!",state="complete",expanded=False)
+        st.success(f"Created {len(done)} clip(s).")
+        if len(done)<wanted:
+            st.info("The source was too short to produce that many distinct clip windows.")
+        st.caption(f"Detected language: {detected or 'unknown'}")
+        for i,(suggested,path,a,b) in enumerate(done,1):
+            with st.expander(f"Clip {i}: {suggested}",expanded=(i==1)):
+                edited=st.text_input("Clip title",value=suggested,key=f"title_{i}")
+                st.video(str(path))
+                st.download_button("⬇️ Download MP4",data=path.read_bytes(),file_name=safe_name(edited)+".mp4",mime="video/mp4",key=f"dl_{i}")
+                st.caption(f"Source segment: {a:.1f}s – {b:.1f}s")
+        archive=work/"clipforge_clips.zip"
+        import zipfile
+        with zipfile.ZipFile(archive,"w",zipfile.ZIP_DEFLATED) as z:
+            for i,(title,path,a,b) in enumerate(done,1):
+                z.write(path,arcname=f"{i:02d}_{safe_name(title)}.mp4")
+        st.download_button("📦 Download all clips as ZIP",data=archive.read_bytes(),file_name="clipforge-clips.zip",mime="application/zip",use_container_width=True)
+    except Exception as e:
+        st.error(f"Could not finish processing: {e}")
+        st.info("On free hosting, try a shorter video and the Tiny speech model. Ensure FFmpeg is installed.")
+        st.exception(e)
+
+st.divider()
+st.caption("ClipForge is a free, open-source-style workflow using Whisper and FFmpeg. It cannot fetch arbitrary YouTube/Twitch watch pages or bypass access controls. Highlight selection is transcript-based and is not a guarantee of virality.")
