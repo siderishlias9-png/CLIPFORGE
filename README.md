@@ -16,7 +16,7 @@
 Upload `app.py`, `requirements.txt`, `packages.txt` to your GitHub repository connected to Streamlit Community Cloud. It should rebuild automatically.
 
 ## YouTube note
-YouTube link support depends on yt-dlp and YouTube's current delivery behavior. It is not guaranteed for every video. This project does not use cookies, logins, DRM circumvention or access-control bypasses. Use videos you own or have permission to edit.
+YouTube link support uses yt-dlp's best-video-plus-best-audio selector with a combined-format fallback, rather than forcing MP4-only formats. It still depends on yt-dlp and YouTube's current delivery behavior, so it is not guaranteed for every video. This project does not use cookies, logins, DRM circumvention or access-control bypasses. Use videos you own or have permission to edit.
 
 ## Hosting limitations
 Streamlit free hosting has CPU, RAM and execution-time limits. Start with shorter videos and the Tiny model. The Small model can be slow. Subtitle accuracy and title suggestions depend on transcription quality and may need edits.

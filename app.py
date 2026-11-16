@@ -61,19 +61,36 @@ def download_youtube(url,dest):
     except ImportError:
         raise RuntimeError("YouTube support is missing. Install the requirements.txt included in this project.")
     opts={
-        "format":"best[ext=mp4]/best",
+        # Prefer the best available video + audio streams, but fall back to a
+        # single combined format when separate streams are unavailable.
+        # This avoids forcing an MP4-only format that some videos do not offer.
+        "format":"bestvideo*+bestaudio/best",
+        "format_sort":["res","ext:mp4:m4a"],
         "outtmpl":str(dest.with_suffix(".%(ext)s")),
         "noplaylist":True,
         "quiet":True,
         "no_warnings":True,
         "merge_output_format":"mp4",
         "max_filesize":1_500_000_000,
-        "retries":2,
-        "fragment_retries":2,
+        "retries":3,
+        "fragment_retries":5,
+        "extractor_retries":3,
+        "concurrent_fragment_downloads":4,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info=ydl.extract_info(url,download=True)
-        requested=ydl.prepare_filename(info)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info=ydl.extract_info(url,download=True)
+            requested=ydl.prepare_filename(info)
+    except yt_dlp.utils.DownloadError as exc:
+        message=str(exc)
+        if "Requested format is not available" in message:
+            raise RuntimeError(
+                "YouTube did not provide a format compatible with the selected download. "
+                "The app now tries multiple format fallbacks; this video may still be "
+                "restricted or temporarily unsupported by yt-dlp. Try another public video "
+                "or update yt-dlp in requirements.txt and redeploy."
+            ) from exc
+        raise
     got=Path(requested)
     if not got.exists():
         mp4=got.with_suffix(".mp4")
