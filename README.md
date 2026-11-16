@@ -1,26 +1,25 @@
-# ClipForge AI — free upgraded build
+# ClipForge AI v5 — upgraded build
 
-## Features
-- Upload MP4, MOV, MKV or WebM, or provide a direct public video-file URL
-- Automatic speech transcription with faster-whisper
-- Transcript-based highlight selection, with fill logic for the requested clip count (up to 10)
-- Suggested editable titles for every clip
-- Animated ASS subtitles with fade/pop-in animation and two-line wrapping
-- Smooth video and audio fade transitions
-- Optional generated whoosh-like sound accent
-- Vertical 9:16, square 1:1 and landscape 16:9 MP4 export
-- Download individual clips or all clips in one ZIP
+## What's new
+- Word-level Whisper timestamps and karaoke-style animated captions
+- Controls for subtitle size and how many words appear together
+- Presets for quick testing, balanced output, 10 clips, longer clips, and higher transcription accuracy
+- Custom controls for clip count, duration and Whisper model
+- More meaningful transcript-based title suggestions, preserving Greek and other scripts; titles remain editable
+- YouTube URL input using yt-dlp for publicly accessible videos
+- Direct public video-file URL and upload options
+- Smooth video/audio fades, optional generated whoosh accent
+- 9:16, 1:1 and 16:9 output
+- Individual MP4 downloads and ZIP download for all clips
 
-## Deploy on Streamlit Community Cloud
-1. Create a GitHub repository.
-2. Upload `app.py`, `requirements.txt`, and `packages.txt`.
-3. Create a Streamlit app pointing to `app.py`.
+## Deploy
+Upload `app.py`, `requirements.txt`, `packages.txt` to your GitHub repository connected to Streamlit Community Cloud. It should rebuild automatically.
 
-## Important limitations
-- URL input must be a direct, publicly accessible video file. YouTube/Twitch watch-page URLs, private videos, login-protected pages and DRM-restricted streams are not supported.
-- Free hosting has CPU, RAM and execution-time limits. Start with short videos and the `tiny` Whisper model.
-- Highlight selection is transcript-based, not a guaranteed viral-content detector.
-- FFmpeg must include the `ass` subtitle filter (normally provided by standard FFmpeg builds).
+## YouTube note
+YouTube link support depends on yt-dlp and YouTube's current delivery behavior. It is not guaranteed for every video. This project does not use cookies, logins, DRM circumvention or access-control bypasses. Use videos you own or have permission to edit.
+
+## Hosting limitations
+Streamlit free hosting has CPU, RAM and execution-time limits. Start with shorter videos and the Tiny model. The Small model can be slow. Subtitle accuracy and title suggestions depend on transcription quality and may need edits.
 
 ## Run locally
 Install FFmpeg, then:
